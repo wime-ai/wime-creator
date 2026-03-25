@@ -13,16 +13,18 @@ canonical_request = "HTTPMethod:{method}\nCanonicalURI:{path}\nCanonicalQueryStr
 import hashlib
 import hmac
 import json
+import os
 import time
 import argparse
 from typing import Dict, Optional
 
 # 环境配置
+# AK/SK 优先从环境变量 WIME_AK / WIME_SK 读取，未设置则为空（会在调用时报错提示）
 ENVS = {
     "ol": {
-        "base_url": "https://openapi.wime-ai.com",
-        "ak": "",
-        "sk": "",
+        "base_url": os.environ.get("WIME_BASE_URL", "https://openapi.wime-ai.com"),
+        "ak": os.environ.get("WIME_AK", ""),
+        "sk": os.environ.get("WIME_SK", ""),
     },
 }
 

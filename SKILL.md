@@ -1,5 +1,5 @@
 ---
-name: wime-api
+name: wime-creator
 description: WIME AI 电商创作平台 OpenAPI。提供两个核心能力：1）抠图 — 上传本地图片（或 URL）自动抠图，返回透明背景图 URL；2）商拍图 — 自动抠图后生成多张 AI 商拍图。触发场景：用户提到抠图、商拍图、商品图、WIME、电商图片处理时激活。
 ---
 
@@ -138,19 +138,36 @@ cropped_path, (crop_w, crop_h) = crop_alpha_bbox(cutout_url, "/tmp/wime_cropped.
 
 **判断完成的条件：** `taskStatus == 2 且 result 非空`。
 
-**⚠️ taskStatus=0 的判定逻辑：**
+**⚠️ taskStatus=0 的判定逻辑（修正版）：**
 
-任务生命周期中 `status=0` 有两种含义，需要根据任务是否**曾经被调度过**来区分：
+实测发现：商拍任务在较长一段时间内**持续返回 `status=0` 仍可能最终成功**。因此，**不要因为连续几次 `0` 就判定失败**。
 
-1. **从未被调度过**（从提交到现在一直是 0，没出现过 1/3/4）：
-   - 可能只是调度器延迟，多等几轮（建议容忍 ≥5 次）
-   - 连续超过阈值仍为 0 → 判定为调度失败
+任务生命周期中 `status=0` 至少有三种可能：
 
-2. **曾经被调度过**（历史上出现过 status=1/3/4，说明已进入执行流程）：
-   - 又回到 0 → **立即判定为执行失败**（风控拦截、模型异常等）
-   - 不需要等多次，因为正常流程不会从执行中回退到 0
+1. **调度延迟 / 状态未刷新**
+   - 任务刚提交后，可能长时间停留在 `0`
+   - 即使连续多次查询都是 `0`，后续仍可能直接变成 `2`
 
-实现要点：用 `was_scheduled` 标记跟踪每个任务是否曾出现过 1/3/4 状态。
+2. **真正失败**
+   - 服务端最终不会产出结果
+   - 但仅凭短时间的 `0` 无法和“调度延迟”区分
+
+3. **执行后异常回退**
+   - 如果历史上出现过 `1/3/4`，随后又回到 `0`，失败概率较高
+   - 但仍建议结合更长轮询窗口判断，不要立刻下结论
+
+**推荐轮询策略：**
+- 完成条件：`taskStatus == 2` 且 `result` 非空
+- 轮询间隔：`5~10` 秒
+- 默认最长等待：`3~10` 分钟（按场景可调）
+- 在超时前，**不要仅因 `status=0` 就判失败**
+- 若超时后仍是 `0` 且始终无结果，才标记为“超时/未完成”，而不是武断写成“失败”
+
+**推荐实现要点：**
+- 用 `was_scheduled` 记录是否出现过 `1/3/4`
+- 用 `deadline` 控制总轮询时长
+- 结果分为三类：`done` / `timeout` / `failed`
+- `timeout` 与 `failed` 分开表示；`status=0` 长时间无结果优先记为 `timeout`
 
 **输出给用户：** 每张图完成时立即返回结果 URL
 
@@ -165,6 +182,17 @@ cropped_path, (crop_w, crop_h) = crop_alpha_bbox(cutout_url, "/tmp/wime_cropped.
 | 生产 | `https://openapi.wime-ai.com` | 线上环境（AK/SK 待配置） |
 
 默认使用生产环境。
+
+## 获取 AK/SK
+
+如果环境里还没有 WIME 的 key，先去 **wime.ai 官网**申请或获取 OpenAPI 的 `AK/SK`。
+
+建议在 skill 中明确提示用户：
+- 去 `wime.ai` 官网登录账号
+- 进入 OpenAPI / 开放平台 / API Key 相关页面
+- 获取或创建 `AK` 和 `SK`
+
+如果当前环境未配置 `WIME_AK` / `WIME_SK`，应直接告知用户先去官网获取，而不是盲目调用接口。
 
 ## 认证
 
@@ -187,6 +215,30 @@ resp = requests.post(url, headers={...}, json=body)
 ```
 
 图片上传 (multipart/form-data) 签名时 body 传 None。
+
+## 配置方式
+
+拿到 `AK/SK` 之后，优先用环境变量配置：
+
+```bash
+export WIME_AK='你的AK'
+export WIME_SK='你的SK'
+# 可选，不填时默认生产环境
+export WIME_BASE_URL='https://openapi.wime-ai.com'
+```
+
+`scripts/wime_auth.py` 会自动从以下环境变量读取：
+- `WIME_AK`
+- `WIME_SK`
+- `WIME_BASE_URL`（可选）
+
+如果在当前 shell 临时测试，也可以只在单次命令前注入：
+
+```bash
+WIME_AK='你的AK' WIME_SK='你的SK' python3 your_script.py
+```
+
+若 `WIME_AK` 或 `WIME_SK` 缺失，调用前应直接报错并提示用户先完成配置。
 
 ## 接口参考
 
